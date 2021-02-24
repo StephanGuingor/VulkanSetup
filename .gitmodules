@@ -1,0 +1,3 @@
+[submodule "VulkanS/vendor/GLFW"]
+	path = VulkanS/vendor/GLFW
+	url = https://github.com/StephanGuingor/glfw.git

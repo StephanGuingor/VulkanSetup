@@ -25,15 +25,14 @@ namespace VKSP
 	class App
 	{
 	public:
-
-		
-
 		App();
 		~App();
+		inline void setFramBufferResize(bool val) { framebufferResized = val; }
 		void Run();
 
 	private:
 		void initWindow();
+
 		void initVulkan();
 		void createInstance();
 		void pickPhysicalDevice();
@@ -53,15 +52,17 @@ namespace VKSP
 		void createGraphicsPipeline();
 		void createFramebuffers();
 		void drawFrame();
-		void createSemaphores();
+		void createSyncObjects();
 		VkShaderModule createShaderModule(const std::vector<char>& code);
 		VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
 		void createImageViews();
 		void createSwapChain();
 		void  createCommandPool();
 		void createCommandBuffers();
-		std::vector<const char*> getRequiredExtensions();
+		void recreateSwapChain();
+		void cleanupSwapChain();
 
+		std::vector<const char*> getRequiredExtensions();
 		static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 			VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 			VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -86,8 +87,10 @@ namespace VKSP
 
 		const int WIDTH = 1080;
 		const int HEIGHT = 720;
-
+		size_t currentFrame = 0;
+		const int MAX_FRAMES_IN_FLIGHT = 2;
 		bool m_Running = true;
+		bool framebufferResized = false;
 
 		VkDebugUtilsMessengerEXT debugMessenger;
 
@@ -96,6 +99,10 @@ namespace VKSP
 		std::vector<VkImageView> swapChainImageViews;
 		std::vector<VkFramebuffer> swapChainFramebuffers;
 		std::vector<VkCommandBuffer> commandBuffers;
+		std::vector<VkSemaphore> imageAvailableSemaphores;
+		std::vector<VkSemaphore> renderFinishedSemaphores;
+		std::vector<VkFence> inFlightFences;
+		std::vector<VkFence> imagesInFlight;
 
 		VkFormat swapChainImageFormat;
 		VkExtent2D swapChainExtent;
@@ -110,8 +117,6 @@ namespace VKSP
 		VkPipeline graphicsPipeline;
 		VkPipelineLayout pipelineLayout;
 		VkCommandPool commandPool;
-		VkSemaphore imageAvailableSemaphore;
-		VkSemaphore renderFinishedSemaphore;
 		GLFWwindow* window;
 	
 	};

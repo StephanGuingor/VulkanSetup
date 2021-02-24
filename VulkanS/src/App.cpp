@@ -28,6 +28,11 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 	}
 }
 
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+	auto app = reinterpret_cast<VKSP::App*>(glfwGetWindowUserPointer(window));
+	app->setFramBufferResize(true);
+}
+
 static std::vector<char> readFile(const std::string& filename) {
 	std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
@@ -47,6 +52,7 @@ static std::vector<char> readFile(const std::string& filename) {
 namespace VKSP
 {
 	App* App::s_Instance = nullptr;
+
 	App::App()
 	{
 		VK_ASSERT(!s_Instance, "Application already exist");
@@ -67,28 +73,27 @@ namespace VKSP
 
 	App::~App()
 	{
-		if (enableValidationLayers)
-		{
+		cleanupSwapChain();
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+			vkDestroyFence(device, inFlightFences[i], nullptr);
+		}
+
+		vkDestroyCommandPool(device, commandPool, nullptr);
+
+		vkDestroyDevice(device, nullptr);
+
+		if (enableValidationLayers) {
 			DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 		}
-		for (auto framebuffer : swapChainFramebuffers) {
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
-		}
-		for (auto imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
-		}
-		vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
-		vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
-		vkDestroyCommandPool(device, commandPool, nullptr);
-		vkDestroyPipeline(device, graphicsPipeline, nullptr);
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-		vkDestroyRenderPass(device, renderPass, nullptr);
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
-		vkDestroyDevice(device, nullptr);
+
 		vkDestroySurfaceKHR(instance, surface, nullptr);
 		vkDestroyInstance(instance, nullptr);
 
 		glfwDestroyWindow(window);
+
 		glfwTerminate();
 	}
 
@@ -109,8 +114,9 @@ namespace VKSP
 
 		// CREATING A WINDOW
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Window", nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 	}
 
 	void App::initVulkan()
@@ -127,7 +133,7 @@ namespace VKSP
 		createFramebuffers();
 		createCommandPool();
 		createCommandBuffers();
-		createSemaphores();
+		createSyncObjects();
 	}
 
 	void App::createInstance()
@@ -678,13 +684,30 @@ namespace VKSP
 
 	void App::drawFrame()
 	{
+		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+		
+
 		uint32_t imageIndex;
-		vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex); // get image to render
+		VkResult r = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex); // get image to render
+		if (r == VK_ERROR_OUT_OF_DATE_KHR)
+		{
+			recreateSwapChain();
+			return;
+		}
+
+		VK_ASSERT(r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR,"Failed to aquire next image");
+
+			// Check if a previous frame is using this image (i.e. there is its fence to wait on)
+		if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+			vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+		}
+		// Mark the image as now being in use by this frame
+		imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-		VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
 		submitInfo.pWaitSemaphores = waitSemaphores;
@@ -693,11 +716,13 @@ namespace VKSP
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
 
-		VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
 
-		VkResult res = vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+		vkResetFences(device, 1, &inFlightFences[currentFrame]);
+
+		VkResult res = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
 		VK_ASSERT(res == VK_SUCCESS, "Failed to submit graphics queue!");
 
 		// presentation
@@ -713,17 +738,44 @@ namespace VKSP
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr; // Optional
 
-		vkQueuePresentKHR(presentQueue, &presentInfo);
+		r = vkQueuePresentKHR(presentQueue, &presentInfo);
+		if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized)
+		{
+			framebufferResized = false;
+			recreateSwapChain();
+		}
+		else
+		{
+			VK_ASSERT(r == VK_SUCCESS, "Failed to present swap chain image");
+		}
+		// update frame count
+		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
-	void App::createSemaphores()
+	void App::createSyncObjects()
 	{
+		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+		imagesInFlight.resize(swapChainImages.size(), VK_NULL_HANDLE);
+
 		VkSemaphoreCreateInfo semaphoreInfo{};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-		VkResult r = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore);
-		VK_ASSERT(r == VK_SUCCESS, "Failed to create Semaphore!");
-		r = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore);
-		VK_ASSERT(r == VK_SUCCESS, "Failed to create Semaphore!");
+
+
+		VkFenceCreateInfo fenceInfo{};
+		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			VkResult r = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]);
+			VK_ASSERT(r == VK_SUCCESS, "Failed to create Semaphore!");
+			r = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]);
+			VK_ASSERT(r == VK_SUCCESS, "Failed to create Semaphore!");
+
+			r = vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]);
+			VK_ASSERT(r == VK_SUCCESS, "Failed to create fences!");
+		}
 	}
 
 	VkShaderModule App::createShaderModule(const std::vector<char>& code)
@@ -911,6 +963,45 @@ namespace VKSP
 		}
 
 
+	}
+
+	void App::recreateSwapChain()
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while (width == 0 || height == 0) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		vkDeviceWaitIdle(device);
+		cleanupSwapChain();
+
+		createSwapChain();
+		createImageViews();
+		createRenderPass();
+		createGraphicsPipeline();
+		createFramebuffers();
+		createCommandBuffers();
+	}
+
+	void App::cleanupSwapChain()
+	{
+		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+			vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
+		}
+
+		vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+		vkDestroyRenderPass(device, renderPass, nullptr);
+
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+		}
+
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	std::vector<const char*> App::getRequiredExtensions()

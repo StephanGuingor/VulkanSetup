@@ -15,6 +15,7 @@ workspace "VulkanSetup"
     -- Include directories relative to root (sln)
     IncludeDir  = {}
     IncludeDir["GLFW"] = "VulkanS/vendor/GLFW/include"
+    IncludeDir["glm"] = "VulkanS/vendor/glm"
     
     -- Include premake
     group "Dependencies"
@@ -51,6 +52,7 @@ workspace "VulkanSetup"
             "%{prj.name}/src",
             "%{prj.name}/vendor/spdlog/include",
             "%{IncludeDir.GLFW}",
+            "%{IncludeDir.glm}",
             "%{prj.name}/vendor/vulkansdk/include"
         }
     

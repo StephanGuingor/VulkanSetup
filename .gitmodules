@@ -1,3 +1,6 @@
 [submodule "VulkanS/vendor/GLFW"]
 	path = VulkanS/vendor/GLFW
 	url = https://github.com/StephanGuingor/glfw.git
+[submodule "VulkanS/vendor/spdlog"]
+	path = VulkanS/vendor/spdlog
+	url = https://github.com/gabime/spdlog
